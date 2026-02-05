@@ -352,9 +352,7 @@ def run_batch_em_pipeline(json_files_list, output_combined_file=None, max_iter=1
             f.write("Sample\tCHROM\tStart\tEnd\tLength\n")
             for sample_name, tracks in out_dict_new.items():
                 archaic_intervals = tracks.get('Archaic', [])
-                for start, end in archaic_intervals:
-                    f.write(f"{sample_name}\t{jsn_data["CHROM"]}\t{start}\t{end}\t{end - start +1}\n")
-                    
+                for start, end in archaic_intervals:                    
                     if output_combined_file:
                         all_results.append({
                             "CHR": jsn_data["CHROM"],
