@@ -7,28 +7,54 @@ import useful
 
 import pandas as pd
 
-def history_archaic(gen_time, len_seq, rr,mu, n_e, t,  n, rand_sd, n_neand, t_neand_samples, n_eu, n_eu_growth, t_eu_growth, n_eu_bottleneck, gr_rt, p_admix,ploid ):
+def history_archaic(gen_time, len_seq, rr,mu, n_e, t,  n, rand_sd, n_neand, t_neand_samples, n_eu, n_eu_growth, t_eu_growth, n_eu_bottleneck, gr_rt, p_admix,p_admix_old,ploid ):
    
-    n_ANC, n_ND, n_AMH, n_OOA,n_AF, n_EU = n_e
-    t_NEAND_migration, t_NEAND_AMH, t_OOF_AF = t
+    n_ANC, n_ND, n_AMH, n_OOA, n_AF, n_EU = n_e
+    # n_ANC — размер общего предка людей и неандертальцев
+    # n_ND — размер популяции неандертальцев
+    # n_AMH — размер популяции ранних современных людей
+    # n_OOA — размер популяции вышедших из Африки
+    # n_AF — размер африканской популяции (без примеси)
+    # n_EU — размер европейцев
+    t_NEAND_migration, t_NEAND_old_migration, t_NEAND_AMH, t_OOF_AF = t # ДОБАВИТЬ t_NEAND_old_migration
+    #t_NEAND_migration - Когда неандертальцы смешались с европейцами 3
+    #t_NEAND_AMH - Когда неандертальцы и современные люди РАЗОШЛИСЬ как виды 1
+    #t_OOF_AF - Когда неафриканцы отделились от африканцев (Out of Africa) 2
+    #t - количество ПОКОЛЕНИЙ назад
 
     
     demography = msprime.Demography()
     
     
-    demography.add_population(name="AF", initial_size=n_AF)
-    demography.add_population(name="EU", initial_size=n_EU)
-    demography.add_population(name="AMH", initial_size=n_AMH)
-    demography.add_population(name="NEAND", initial_size=n_ND)
-    demography.add_population(name="ANCES", initial_size=n_ANC)  #common population for Neanderthal and AMH
-    demography.add_population(name="OOA", initial_size = n_OOA)
+    demography.add_population(name="AF", initial_size=n_AF) # id = 0
+    demography.add_population(name="EU", initial_size=n_EU)  # id = 1
+    demography.add_population(name="AMH", initial_size=n_AMH) # id = 2
+    demography.add_population(name="NEAND", initial_size=n_ND)  # id = 3
+    demography.add_population(name="ANCES", initial_size=n_ANC)  #common population for Neanderthal and AMH,  id = 4
+    demography.add_population(name="OOA", initial_size = n_OOA)  # id = 5
     
+
+    #     прошлое
+    # |   рост = 0   ← (очень давно)
+    # |   рост = gr_rt  ← (начался)
+    # |   рост = gr_rt  ← (и идёт до наст. вр.)
+    # сейчас (time=0)
+    # то есть на самом деле это не рост а убыль, если смотреть от сейчас назад. тк раньше было меньше, чем сейчас
+
     
-    demography.add_population_parameters_change(time=0, initial_size=n_EU, population=1, growth_rate=gr_rt)
-    demography.add_population_parameters_change(time=t_eu_growth, initial_size=n_eu_growth, population=1, growth_rate=0)   
+    demography.add_population_parameters_change(time=0, 
+                                                initial_size=n_EU, 
+                                                population=1, 
+                                                growth_rate=gr_rt) # современность, европейцы растут с темпом gr_rt
+    demography.add_population_parameters_change(time=t_eu_growth, 
+                                                initial_size=n_eu_growth, 
+                                                population=1, 
+                                                growth_rate=0) #  В прошлом (t_eu_growth поколений назад) рост закончился, и размер зафиксировался = n_eu_growth
+    # а почему нет роста для ooa? они же тоже явно росли
     
-    demography.add_admixture(time=t_NEAND_migration, derived="EU", ancestral=["OOA", "NEAND"], 
-                             proportions=[1-p_admix, p_admix])
+    demography.add_admixture(time=t_NEAND_old_migration, derived="EU", ancestral=["OOA", "NEAND"], proportions=[1-p_admix_old, p_admix_old]) # более СТАРАЯ миграция
+    demography.add_mass_migration(time=t_NEAND_migration, source="EU", dest="NEAND", proportion=p_admix) # proportion = доля НЕАНДЕРТАЛЬСКОЙ примеси
+
 
 
     demography.add_population_split(time = t_OOF_AF, derived=["AF", "OOA"], ancestral="AMH")
@@ -244,6 +270,15 @@ def real_nd_tracts(ts, n_eu_diplo, ploidy, T):
 
     return ND_true_tracts
     print('средняя доля неандертальца',s/(n_eu * len_sequence))
+
+def real_nd_tracts_2waves(ts, n_eu_diplo, ploidy, T_old, T_young):
+    nd_old = []
+    nd_young = []
+    for idx in range(ploidy*n_eu_diplo):
+        nd_old.append(get_migrating_tracts_ind(ts, 'NEAND', idx, T_old))
+        nd_young.append(get_migrating_tracts_ind(ts, 'NEAND', idx, T_young))
+    return nd_old, nd_young
+
 
 
 
