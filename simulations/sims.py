@@ -10,21 +10,40 @@ import subprocess
 
 def history_archaic(prms, ne, t, p_admix, seed):
     """Simulate demography with introgression."""
+
+    # n_ANC — размер общего предка людей и неандертальцев
+    # n_ND — размер популяции неандертальцев
+    # n_AMH — размер популяции ранних современных людей
+    # n_OOA — размер популяции вышедших из Африки
+    # n_AF — размер африканской популяции (без примеси)
+    # n_EU — размер европейцев
+
     # Define pops
     demography = msprime.Demography()
     demography.add_population(name="AF", initial_size=ne['af'])
     demography.add_population(name="EU", initial_size=ne['eu'])
     demography.add_population(name="AMH", initial_size=ne['amh'])
     demography.add_population(name="ND", initial_size=ne['nd'])
-    demography.add_population(name="ANCES", initial_size=ne['anc'])  
+    demography.add_population(name="ANCES", initial_size=ne['anc']) #common population for Neanderthal and AMH
     demography.add_population(name="OOA", initial_size=ne['ooa'])
-    
+
+    #     прошлое
+    # |   рост = 0   ← (очень давно)
+    # |   рост = gr_rt  ← (начался)
+    # |   рост = gr_rt  ← (и идёт до наст. вр.)
+    # сейчас (time=0)
+    # то есть на самом деле это не рост а убыль, если смотреть от сейчас назад. тк раньше было меньше, чем сейчас
+
     # Events
-    demography.add_population_parameters_change(time=0, initial_size=ne['eu'], population="EU", growth_rate=0.00202)
-    demography.add_population_parameters_change(time=t['t_eu_growth'], initial_size=ne['eu_growth'], population="EU", growth_rate=0)
+    demography.add_population_parameters_change(time=0, initial_size=ne['eu'], population="EU", growth_rate=0.00202)  # современность, европейцы растут с темпом gr_rt
+    demography.add_population_parameters_change(time=t['t_eu_growth'], initial_size=ne['eu_growth'], population="EU", growth_rate=0)  #  В прошлом (t_eu_growth поколений назад) рост закончился, и размер зафиксировался = n_eu_growth
+    # а почему нет роста для ooa? они же тоже явно росли
     
     # Admixture
-    demography.add_admixture(time=t['t_nd_migration'], derived="EU", ancestral=["OOA", "ND"], proportions=[1-p_admix, p_admix])
+    p_old = p_admix["old"]     
+    p_young = p_admix["young"]  
+    demography.add_admixture(time=t['t_nd_old_migration'], derived="EU", ancestral=["OOA", "ND"], proportions=[1-p_old, p_old]) # более СТАРАЯ миграция
+    demography.add_mass_migration(time=t['t_nd_migration'], source="EU", dest="ND", proportion=p_young) # proportion = доля НЕАНДЕРТАЛЬСКОЙ примеси
     
     # Splits
     demography.add_population_split(time=t['t_ooa'], derived=["AF", "OOA"], ancestral="AMH")
@@ -64,7 +83,8 @@ def get_migrating_tracts_ind(ts, pop_name, ind_node, T_anc):
 
     # Filter migrations
     tables = ts.tables
-    mask = (tables.migrations.time == T_anc) & (tables.migrations.dest == pop_id)
+    # mask = (tables.migrations.time == T_anc) & (tables.migrations.dest == pop_id)
+    mask = np.isclose(tables.migrations.time, T_anc) & (tables.migrations.dest == pop_id)  # иначе на float развалится(?)
     relevant = np.where(mask)[0]
     
     # Map nodes
@@ -269,7 +289,11 @@ def process_one_chromosome(seed, prms, ne, t, p_admix, out_dir):
         json.dump(cfg, f, indent=4)
     
     # Ground Truth
-    df_t = get_population_tracts_dataframe(ts, "EU", "ND", t['t_nd_migration'])
+    # df_t = get_population_tracts_dataframe(ts, "EU", "ND", t['t_nd_migration'])
+    df_old = get_population_tracts_dataframe(ts, "EU", "ND", t["t_nd_old_migration"])
+    df_young = get_population_tracts_dataframe(ts, "EU", "ND", t["t_nd_migration"])
+    df_t = pd.concat([df_old, df_young], ignore_index=True)
+
     if not df_t.empty:
         df_t.insert(0, 'CHR', seed)        
         df_t[['Start','End','Length']] = df_t[['Start','End','Length']].astype(int)
