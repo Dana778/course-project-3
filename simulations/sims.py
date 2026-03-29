@@ -307,8 +307,8 @@ def process_one_chromosome(seed, prms, ne, t, p_admix, out_dir):
     df_old = get_population_tracts_dataframe(ts, "EU", "ND", t["t_nd_old_migration"])
     df_young = get_population_tracts_dataframe(ts, "EU", "ND", t["t_nd_migration"])
 
-    df_old["Wave"] = "old"
-    df_young["Wave"] = "young"
+    df_old["State"] = "Archaic_old"
+    df_young["State"] = "Archaic_young"
 
     df_t = pd.concat([df_old, df_young], ignore_index=True)
 
@@ -316,8 +316,7 @@ def process_one_chromosome(seed, prms, ne, t, p_admix, out_dir):
         df_t.insert(0, 'CHR', seed)        
         df_t[['Start','End','Length']] = df_t[['Start','End','Length']].astype(int)
     else:
-
-        df_t = pd.DataFrame(columns=['CHR', 'Sample', 'Start', 'End', 'Length'])
+        df_t = pd.DataFrame(columns=['CHR', 'Sample', 'Start', 'End', 'Length', 'State'])
     
     return df_t
 
@@ -403,7 +402,7 @@ def calculate_accuracy(true_pth, inf_pth):
 
 
 def calculate_class_metrics(true_pth, inf_pth, L):
-    """Calc metrics per class (Archaic/Modern)."""
+    """Calc metrics per class (Modern / Archaic_old / Archaic_young)."""
     # Load
     df_t = pd.read_csv(true_pth, sep='\t') if isinstance(true_pth, str) else true_pth
     try:
@@ -413,44 +412,59 @@ def calculate_class_metrics(true_pth, inf_pth, L):
 
     if df_i is None: df_i = pd.DataFrame(columns=df_t.columns)
 
+    classes = sorted(set(df_t['State']).union(set(df_i['State'])))
+
     # Totals
     pairs = set(zip(df_t['CHR'], df_t['Sample'])).union(set(zip(df_i['CHR'], df_i['Sample'])))
     tot_bp = len(pairs) * L
-    
-    # Overlap (TP Archaic)
-    tp_arch = 0
-    i_grp = df_i.groupby(['CHR', 'Sample'])
-    i_dct = {n: g[['Start', 'End']].values for n, g in i_grp}
-    t_grp = df_t.groupby(['CHR', 'Sample'])
 
-    for name, g_t in t_grp:
-        if name in i_dct:
-            invs = i_dct[name]
-            for _, r in g_t.iterrows():
-                ts, te = r['Start'], r['End']
-                for iss, ie in invs:
-                    s, e = max(ts, iss), min(te, ie)
-                    if s < e: tp_arch += (e - s)
-
-    # Confusion Matrix
-    tot_true = df_t['Length'].sum()
-    tot_pred = df_i['Length'].sum()
+    results = {}
     
-    fp_arch = tot_pred - tp_arch
-    fn_arch = tot_true - tp_arch
-    tn_mod = tot_bp - (tp_arch + fp_arch + fn_arch)
-    
-    def get_stats(tp, fp, fn):
-        p = tp/(tp+fp) if (tp+fp)>0 else 0
-        r = tp/(tp+fn) if (tp+fn)>0 else 0
-        f = 2*p*r/(p+r) if (p+r)>0 else 0
-        return round(p, 4), round(r, 4), round(f, 4)
+    for cls in classes:
+        df_t_cls = df_t[df_t['State'] == cls]
+        df_i_cls = df_i[df_i['State'] == cls]
 
-    pa, ra, fa = get_stats(tp_arch, fp_arch, fn_arch)
-    pm, rm, fm = get_stats(tn_mod, fn_arch, fp_arch)
+        # подготовка
+        i_grp = df_i_cls.groupby(['CHR', 'Sample'])
+        i_dct = {n: g[['Start', 'End']].values for n, g in i_grp}
+        t_grp = df_t_cls.groupby(['CHR', 'Sample'])
+
+        tp = 0
+        for name, g_t in t_grp:
+            if name in i_dct:
+                invs = i_dct[name]
+                for _, r in g_t.iterrows():
+                    ts, te = r['Start'], r['End']
+                    for iss, ie in invs:
+                        s, e = max(ts, iss), min(te, ie)
+                        if s < e: 
+                            tp += (e - s)
+        # Confusion Matrix
+        tot_true = df_t_cls['Length'].sum()
+        tot_pred = df_i_cls['Length'].sum()
+
+        fp = tot_pred - tp
+        fn = tot_true - tp
+        tn = tot_bp - (tp + fp + fn)
+    
+        def get_stats(tp, fp, fn):
+            p = tp/(tp+fp) if (tp+fp)>0 else 0
+            r = tp/(tp+fn) if (tp+fn)>0 else 0
+            f = 2*p*r/(p+r) if (p+r)>0 else 0
+            return round(p, 4), round(r, 4), round(f, 4)
+
+        p, r, f = get_stats(tp, fp, fn)
+
+        results[cls] = {
+            "Precision": p,
+            "Recall": r,
+            "F1": f,
+            "TP": int(tp),
+            "FP": int(fp),
+            "FN": int(fn)
+        }
 
     return {
         "Total_BP": tot_bp,
-        "Archaic": {"Precision": pa, "Recall": ra, "F1": fa, "TP": int(tp_arch), "FP": int(fp_arch), "FN": int(fn_arch)},
-        "Modern":  {"Precision": pm, "Recall": rm, "F1": fm, "TP": int(tn_mod)}
+        "Per_class": results
     }
