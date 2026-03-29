@@ -57,7 +57,7 @@ def prepare_matrices_from_dict(data_dict):
 # Tn: Time of Split between Nd and Sapiens
 
 # Transition probabilities
-def initA(L, rr, Ti, a) -> np.array:
+def initA(L, rr, Ti, a):
     """Calculates standard transition probability matrix based on recombination and admixture."""
     A = np.zeros((2, 2))
     
@@ -68,7 +68,6 @@ def initA(L, rr, Ti, a) -> np.array:
     A[1][1] = 1 - A[1][0]
     
     return A
-
 
 # Log-transition probabilities
 def get_log_A(L, rr, Ti, a):
@@ -88,6 +87,39 @@ def get_log_A(L, rr, Ti, a):
     A[1, 0] = prob * (1.0 - a)
     A[1, 1] = 1.0 - A[1, 0]
     
+    return np.log(A + 1e-300)
+
+# a_old - доля примеси сразу после старой волны
+# a_young - доля примеси сразу после новой волны 
+def initA3(L, rr, t_old, t_young, a_old, a_young):
+    """Calculates standard transition probability matrix based on recombination and admixture."""
+    A = np.zeros((3, 3), dtype=float)
+    
+    A[0][1] = (1-np.exp(-rr*L*(t_old-t_young)))*np.exp(-rr*L*t_young)*a_old + (1-np.exp(-rr*L*t_young))*a_old*(1-a_young)  # Modern -> Archaic1
+        # 1-np.exp(-rr*L*(t_old-t_young)) - между старой и новой волной произошла рекомбинация
+        # np.exp(-rr*L*t_young) - не было рекомбинации после 2 волны
+        # 1-a_young - доля генома, которая НЕ стала archaic2 сразу после 2-й волны 
+    A[0][2] = (1-np.exp(-rr*L*t_young))*a_young  # Modern -> Archaic2
+    A[0][0] = 1 - A[0][1] - A[0][2]  # Modern -> Modern, рекомбинации вообще не было, либо рекомбинация была, но новый кусок снова оказался modern
+    
+    A[1][0] = (1-np.exp(-rr*L*(t_old-t_young)))*np.exp(-rr*L*t_young)*(1-a_old) + (1-np.exp(-rr*L*t_young))*(1 - a_old)*(1-a_young) # Archaic1 -> Modern
+        # (1-np.exp(-rr*L*(t_old-t_young)))*np.exp(-rr*L*t_young) - рекомбинация произошла после 1 волны, после 2 волны рекомбинации не было (то есть примешалось archaic1)
+        # 1-a_old - попали в ту часть генома, которая от африканцев (modern)
+        # 1-np.exp(-rr*L*t_young) - произошла рекомбинация после 2 волны
+        # (1 - a_old)*(1-a_young) - попали в ту часть генома, которая от африканцев (modern)
+    A[1][2] = (1-np.exp(-rr*L*t_young))*a_young  # Archaic1 -> Archaic2 
+    A[1][1] = 1 - A[1][0] - A[1][2]
+
+    A[2][0] = (1-np.exp(-rr*L*t_young))*(1 - a_old)*(1-a_young) # Archaic2 -> Modern
+    A[2][1] = (1-np.exp(-rr*L*t_young))*a_old*(1-a_young)  # Archaic2 -> Archaic1 
+    A[2][2] = 1 - A[2][0] - A[2][1] 
+    
+    A = np.clip(A, 0.0, 1.0)
+    A = A / A.sum(axis=1, keepdims=True) # нормировка строк: делим каждую строку на её сумму, чтобы в каждой строке сумма стала 1
+    return A
+
+def get_log_A3(L, rr, t_old, t_young, a_old, a_young):
+    A = initA3(L, rr, t_old, t_young, a_old, a_young)
     return np.log(A + 1e-300)
 
 
@@ -120,30 +152,40 @@ def initB_arch_cover(lmbd, n_st, cover_1k, cover_nd):
     
     return B
 
-
-def compute_emissions_custom(O1, O2, L1, L2, lmbd):
+# в функцию подается массив гаплотипов
+# k (O1 и О2) – наблюдение, в нашем случае количество мутаций
+# от стандартной формулы пуассона берем log:
+#   P(k|λ)   =  (λ^k     * e^{-λ}) /  (k!) -> 
+# log P(k|λ) = k*log(λ)  -   λ     - log(k!)
+# log P(O1=k1, O2=k2 | state) = log P(O1=k1 | state) + log P(O2=k2 | state)
+# предподсчитываем все эмиссии
+def compute_emissions_custom(O1, O2, L1, L2, rates):
     """Computes vectorized log-emission scores for all haplotypes using simplified Poisson model."""
-    M, N = O1.shape
-    n_states = 2
+    M, N = O1.shape  # M - количество гаплотипов (удвоенное колво людей), N - число окон по геному
+    n_states = 3
     
-    # Output matrix (M x N x 2 states)
+    # Output matrix (M x N x 3 states)
     log_emit = np.zeros((M, N, n_states))
     
     # Extract rate parameters
-    rate_i = lmbd[2]
-    rate_n = lmbd[0]
-    rate_af = lmbd[1]
-    rate_i = lmbd[2]
+    rate_n = rates[0]
+    rate_af = rates[1]
+    rate_i_old = rates[2]
+    rate_i_young = rates[3]
     
     # Epsilon to avoid log(0)
     eps = 1e-300
-    ln_af = np.log(rate_af + eps)
     ln_n = np.log(rate_n + eps)
-    ln_i = np.log(rate_i + eps)
+    ln_af = np.log(rate_af + eps)
+    ln_old = np.log(rate_i_old + eps)
+    ln_young = np.log(rate_i_young + eps)
     
     # Poisson Score = O * ln(rate) - rate * L (ln(O!) cancels)
-    log_emit[:, :, 0] = (O1 * ln_af - rate_af * L1) + (O2 * ln_n - rate_n * L2)
-    log_emit[:, :, 1] = (O1 * ln_n - rate_n * L1) + (O2 * ln_i - rate_i * L2)
+    # modern:           o_1*log(λ(t_afr)) - λ(t_afr)        + o_2*log(λ(t)) - λ(t)      
+    # archaic1:         o_1*log(λ(t)) - λ(t)        + o_2*log(λ(t_1)) - λ(t_1) 
+    log_emit[:, :, 0] = (O1 * ln_af - rate_af * L1) + (O2 * ln_n - rate_n * L2)  # 0 = Modern
+    log_emit[:, :, 1] = (O1 * ln_n - rate_n * L1) + (O2 * ln_old - rate_i_old * L2)  # 1 = Archaic_old
+    log_emit[:, :, 2] = (O1 * ln_n - rate_n * L1) + (O2 * ln_young - rate_i_young * L2) # 2 = Archaic_young
     
     return log_emit
 
@@ -162,10 +204,16 @@ def viterbi_fast(log_emit, log_trans, log_start):
         backpointer = np.zeros((N, n_states), dtype=np.int32)
         
         # 1. Initialization
+        # v_1(j) = π_j*b_j(o_1), b_j - это эмиссии 
         for s in range(n_states):
             viterbi[0, s] = log_start[s] + log_emit[m, 0, s]
         
         # 2. Forward Pass
+        # viterbi - таблица значений (рекурсия в процессе) 
+        # v_t​(j) = max​(v_{t−1}​(i)      * a_i      * ​b_j​(o_t​)) 
+        # =        max(log(v_{t−1}​(i)) + log(a_i) + log(​b_j​(o_t​))). log(​b_j​(o_t​)) не зависит от i => выносим за max
+        # =        max(log(v_{t−1}​(i)) + log(a_i)) + log(​b_j​(o_t​)). max_val = max(log(v_{t−1}​(i)) + log(a_i))
+        # =        max_val + log(​b_j​(o_t​)) = max_val + log_emit 
         for i in range(1, N):
             for s in range(n_states):
                 # Find max(prev_prob + transition)
@@ -182,11 +230,14 @@ def viterbi_fast(log_emit, log_trans, log_start):
                 backpointer[i, s] = best_prev
         
         # 3. Backtrace
-        # Decide final state
-        if viterbi[N - 1, 0] > viterbi[N - 1, 1]:
-            paths[m, N - 1] = 0
-        else:
-            paths[m, N - 1] = 1
+        # Decide final state, выбор argmax по всем 3 состояниям
+        best_last = 0
+        best_val = viterbi[N-1, 0]
+        for s in range(1, n_states):
+            if viterbi[N-1, s] > best_val:
+                best_val = viterbi[N-1, s]
+                best_last = s
+        paths[m, N-1] = best_last
         
         # Reconstruct path backwards
         for i in range(N - 2, -1, -1):
@@ -194,41 +245,49 @@ def viterbi_fast(log_emit, log_trans, log_start):
     
     return paths
 
-
-def run_hmm(O1, O2, L1, L2, lmbd, rr):
+# rates = [lambda_n, lambda_af, lambda_old, lambda_young]
+# transition_params = [t_old, t_young, a_old, a_young]
+def run_hmm(O1, O2, L1, L2, rates, transition_params, rr):
     """Orchestrates HMM pipeline: emissions, transitions, and Viterbi."""
     
     print("Calculating emission scores...")
-    log_emissions = compute_emissions_custom(O1, O2, L1, L2, lmbd)
+    log_emissions = compute_emissions_custom(O1, O2, L1, L2, rates) # считаем эмиссии (по кол-ву мутаций до O_max, не по всем окнам)
     
     # Transitions
-    log_A = get_log_A(1000, rr, lmbd[3], lmbd[4])
+    log_A = get_log_A3(1000, rr, transition_params[0], transition_params[1], transition_params[2], transition_params[3]) # считаем переходы
     
     # Initial probabilities
-    log_start = np.log([1.0 - lmbd[4], lmbd[4]])
+    # log_start = np.log(np.array([1 - a_old - a_young, a_old, a_young]) + 1e-300)
+    log_start = np.log(np.array([1 - transition_params[2] - transition_params[3], transition_params[2], transition_params[3]]) + 1e-300)
     
     print("Running Viterbi...")
     paths = viterbi_fast(log_emissions, log_A, log_start)
     
     return paths
 
-
 def get_tracts(vector, step=1000):
     """Converts binary state vector into dictionary of genomic intervals (start, end)."""
-    result = {0: [], 1: []}
+    # 0 = modern
+    # 1 = archaic_old
+    # 2 = archaic_young
+    result = {0: [], 1: [], 2: []}
     
     current_state = vector[0]
     start_index = 0
     
     for i, state in enumerate(vector):
         if state != current_state:
-            result[current_state].append((start_index * step, i * step - 1))
+            result[current_state].append((start_index * step, i * step - 1)) # [start, end]
             current_state = state
             start_index = i
     
     result[current_state].append((start_index * step, len(vector) * step))
     
-    return {"Modern": result[0], "Archaic": result[1]}
+    return {
+        "Modern": result[0],
+        "Archaic_old": result[1],
+        "Archaic_young": result[2]
+    }
 
 
 def clean_gaps(dct, gap_file, target_chrom):
@@ -294,7 +353,7 @@ def clean_gaps(dct, gap_file, target_chrom):
     return new_dct
 
 
-def run_daiseg(json_file):
+def run_daiseg(json_file): # type: ignore
     """Main pipeline: runs HMM and saves ONLY TSV output."""
     
     with open(json_file, 'r') as f:
@@ -317,15 +376,22 @@ def run_daiseg(json_file):
     mu = prms['mutation']
     rr = prms['rr']
     l = prms['window_length']
-    
+
+    # зачем мы делим на ген_тайм если только что до этого умножали на него? 
     d = mu * l / gen_time
     lambda_0 = [
         d * prms['t_archaic_c'],
         d * prms['t_split_c'],
-        d * prms['t_introgression_c'],
-        d * prms['t_introgression'],
-        prms['admixture_proportion']
+        d * prms['t_introgression_old_c'],
+        d * prms['t_introgression_young_c']
     ]
+    transition_params = [
+        prms['t_introgression_old'] / gen_time,
+        prms['t_introgression_young'] / gen_time,
+        prms['admixture_proportion_old'],
+        prms['admixture_proportion_young']
+    ]
+
     
     # Load callability files
     cal_1kG = np.loadtxt(data['prefix'] + '/' + data["window_callability"]["Thousand_genomes"], usecols=-1)
@@ -335,7 +401,7 @@ def run_daiseg(json_file):
     O1, O2, names = prepare_matrices_from_dict(obs_seq)
     
     # Run HMM
-    result = run_hmm(O1, O2, cal_1kG, cal_nd_1kG, lmbd=lambda_0, rr=rr)
+    result = run_hmm(O1, O2, cal_1kG, cal_nd_1kG, lambda_0, transition_params, rr=rr)
     dictionary = {k: v for k, v in zip(names, result)}
     
     # Extract tracts
@@ -343,8 +409,6 @@ def run_daiseg(json_file):
     for name in names:
         out_dict[name] = get_tracts(dictionary[name])
     
-
-
     # Remove gaps
     out_dict_new = clean_gaps(out_dict, data["gaps"], data["CHROM"])
     
@@ -354,17 +418,18 @@ def run_daiseg(json_file):
     
     rows = []
     with open(output_tsv, "w", encoding="utf-8") as f:
-        f.write("Sample\tCHROM\tStart\tEnd\tLength\n")
+        f.write("Sample\tCHROM\tStart\tEnd\tLength\tState\n")
         for sample_name, tracks in out_dict_new.items():
-            archaic_intervals = tracks.get('Archaic', [])
-            for start, end in archaic_intervals:
-                f.write(f"{sample_name}\t{data['CHROM']}\t{start}\t{end}\t{end-start+1}\n")
-                rows.append({
-                    "Sample": sample_name,
-                    "CHR": data['CHROM'],
-                    "Start": start,
-                    "End": end
-                })
+            for state_name, intervals in tracks.items():
+                for start, end in intervals:
+                    f.write(f"{sample_name}\t{data['CHROM']}\t{start}\t{end}\t{end-start+1}\t{state_name}\n")
+                    rows.append({
+                        "Sample": sample_name,
+                        "CHR": data['CHROM'],
+                        "Start": start,
+                        "End": end,
+                        "State": state_name
+                    })
     
     df_result = pd.DataFrame(rows)
     return df_result, out_dict_new

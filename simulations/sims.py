@@ -35,8 +35,8 @@ def history_archaic(prms, ne, t, p_admix, seed):
     # то есть на самом деле это не рост а убыль, если смотреть от сейчас назад. тк раньше было меньше, чем сейчас
 
     # Events
-    demography.add_population_parameters_change(time=0, initial_size=ne['eu'], population="EU", growth_rate=0.00202)  # современность, европейцы растут с темпом gr_rt
-    demography.add_population_parameters_change(time=t['t_eu_growth'], initial_size=ne['eu_growth'], population="EU", growth_rate=0)  #  В прошлом (t_eu_growth поколений назад) рост закончился, и размер зафиксировался = n_eu_growth
+    demography.add_population_parameters_change(time=0, initial_size=ne['eu'], population=demography["EU"].id, growth_rate=0.00202)  # современность, европейцы растут с темпом gr_rt
+    demography.add_population_parameters_change(time=t['t_eu_growth'], initial_size=ne['eu_growth'], population=demography["EU"].id, growth_rate=0)  #  В прошлом (t_eu_growth поколений назад) рост закончился, и размер зафиксировался = n_eu_growth
     # а почему нет роста для ooa? они же тоже явно росли
     
     # Admixture
@@ -48,6 +48,8 @@ def history_archaic(prms, ne, t, p_admix, seed):
     # Splits
     demography.add_population_split(time=t['t_ooa'], derived=["AF", "OOA"], ancestral="AMH")
     demography.add_population_split(time=t['t_amh'], derived=["AMH", "ND"], ancestral="ANCES")
+
+    demography.sort_events()
     
     # Run sim
     ts = msprime.sim_ancestry(
@@ -277,11 +279,23 @@ def process_one_chromosome(seed, prms, ne, t, p_admix, out_dir):
         "window_callability": {"Thousand_genomes": mask, "Nd_1k_genomes": mask},        
         "samples": {"outgroup": get_ids("AF"), "ingroup": get_ids("EU"), "neand": get_ids("ND")},        
         "parameters_initial": {
-            "admixture_proportion": p_admix, "introgression_time": int(t['t_nd_migration'] * prms['gen_time']),
-            "rr": prms['recomb_rate'], "mutation": prms['mut_rate'], "window_length": 1000,
-            "generation_time": int(prms['gen_time']), "t_archaic_c": int(t['t_amh'] * prms['gen_time']),       
-            "t_split_c": int(t['t_ooa'] * prms['gen_time']), "t_introgression_c": int(t['t_nd_migration'] * prms['gen_time']), 
-            "t_introgression": int(t['t_nd_migration'] * prms['gen_time'])
+            "rr": prms['recomb_rate'], 
+            "mutation": prms['mut_rate'], 
+            "window_length": 1000,
+            "generation_time": int(prms['gen_time']), 
+
+            # времена коалесценции (надо будет изменить, сейчас примем, как будто времена примешивания и коалесценции это одно и то же)
+            "t_archaic_c": int(t['t_amh'] * prms['gen_time']),  # до отделения неандертальцев     
+            "t_split_c": int(t['t_ooa'] * prms['gen_time']),    # африканское время (отделились европейцы от африканцев)      
+            "t_introgression_old_c": int(t['t_nd_old_migration'] * prms['gen_time']), 
+            "t_introgression_young_c": int(t['t_nd_migration'] * prms['gen_time']), 
+
+            # обычные времена (для переходов) 
+            "t_introgression_old": int(t['t_nd_old_migration']* prms['gen_time']),
+            "t_introgression_young": int(t['t_nd_migration']* prms['gen_time']),
+            # пропорции для переходов
+            "admixture_proportion_old": p_admix['old'], 
+            "admixture_proportion_young": p_admix['young'] 
         }
     }
 
@@ -292,12 +306,17 @@ def process_one_chromosome(seed, prms, ne, t, p_admix, out_dir):
     # df_t = get_population_tracts_dataframe(ts, "EU", "ND", t['t_nd_migration'])
     df_old = get_population_tracts_dataframe(ts, "EU", "ND", t["t_nd_old_migration"])
     df_young = get_population_tracts_dataframe(ts, "EU", "ND", t["t_nd_migration"])
+
+    df_old["Wave"] = "old"
+    df_young["Wave"] = "young"
+
     df_t = pd.concat([df_old, df_young], ignore_index=True)
 
     if not df_t.empty:
         df_t.insert(0, 'CHR', seed)        
         df_t[['Start','End','Length']] = df_t[['Start','End','Length']].astype(int)
     else:
+
         df_t = pd.DataFrame(columns=['CHR', 'Sample', 'Start', 'End', 'Length'])
     
     return df_t
