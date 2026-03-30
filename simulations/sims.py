@@ -3,6 +3,7 @@ import pandas as pd
 import numpy as np
 import os, json, gc, sys
 import subprocess
+from sklearn.metrics import confusion_matrix
 
 # ==============================================================================
 # 1. DEMOGRAPHY
@@ -470,3 +471,52 @@ def calculate_class_metrics(true_pth, inf_pth, L):
         "Total_BP": tot_bp,
         "Per_class": results
     }
+
+def build_confusion_matrix(df_t, df_i, chrom_length, window_size=1000):
+    labels = ["Modern", "Archaic_old", "Archaic_young"]
+    state_to_id = {"Modern": 0, "Archaic_old": 1, "Archaic_young": 2}
+
+    n_windows = (chrom_length + window_size - 1) // window_size
+
+    pairs = set(zip(df_t['CHR'], df_t['Sample'])).union(
+        set(zip(df_i['CHR'], df_i['Sample']))
+    )
+
+    y_true_all = []
+    y_pred_all = []
+
+    def paint_states(df_sub):
+        arr = np.zeros(n_windows, dtype=np.int8)
+
+        if df_sub.empty:
+            return arr
+
+        for r in df_sub.itertuples(index=False):
+            w_start = max(0, int(r.Start) // window_size)
+            w_end = min(n_windows - 1, int(r.End) // window_size)
+
+            arr[w_start:w_end + 1] = state_to_id[r.State]
+
+        return arr
+
+    t_groups = {
+        k: g[['Start', 'End', 'State']].copy()
+        for k, g in df_t.groupby(['CHR', 'Sample'])
+    }
+    i_groups = {
+        k: g[['Start', 'End', 'State']].copy()
+        for k, g in df_i.groupby(['CHR', 'Sample'])
+    }
+
+    for pair in pairs:
+        t_sub = t_groups.get(pair, pd.DataFrame(columns=['Start', 'End', 'State']))
+        i_sub = i_groups.get(pair, pd.DataFrame(columns=['Start', 'End', 'State']))
+
+        y_true_all.append(paint_states(t_sub))
+        y_pred_all.append(paint_states(i_sub))
+
+    y_true = np.concatenate(y_true_all)
+    y_pred = np.concatenate(y_pred_all)
+
+    cm = confusion_matrix(y_true, y_pred, labels=[0, 1, 2])
+    return cm, labels
