@@ -349,6 +349,8 @@ def run_daiseg_task(seed, out_dir):
     if os.path.exists(res_file):
         try:
             tmp = pd.read_csv(res_file, sep='\t')
+            if 'State' in tmp.columns:
+                tmp = tmp[tmp['State'] != 'Modern']
             if not tmp.empty:
                 if 'CHR' not in tmp.columns: tmp.insert(0, 'CHR', seed)
                 tmp['Length'] = tmp['End'] - tmp['Start']
