@@ -77,8 +77,8 @@ def forward_backward_normalized(emit, trans, start):
 @jit(nopython=True, parallel=True)
 def e_step_normalized(emit, trans, start, O1, O2, L1, L2):
     M, N, n_states = emit.shape
-    numerators = np.zeros((M, 3)) 
-    denominators = np.zeros((M, 3))
+    numerators = np.zeros((M, 4)) 
+    denominators = np.zeros((M, 4))
     total_log_lik = 0.0
     
     for m in prange(M):
@@ -86,16 +86,20 @@ def e_step_normalized(emit, trans, start, O1, O2, L1, L2):
         total_log_lik += log_lik
         
         # 1. Lambda Neutral (lmbd[0])
-        num_n = np.sum(gamma[:, 0] * O2[m]) + np.sum(gamma[:, 1] * O1[m])
-        den_n = np.sum(gamma[:, 0] * L2[m]) + np.sum(gamma[:, 1] * L1[m])
+        num_n = np.sum(gamma[:, 0] * O2[m]) + np.sum(gamma[:, 1] * O1[m]) + np.sum(gamma[:, 2] * O1[m])
+        den_n = np.sum(gamma[:, 0] * L2[m]) + np.sum(gamma[:, 1] * L1[m]) + np.sum(gamma[:, 2] * L1[m])
         
         # 2. Lambda AF (lmbd[1])
         num_af = np.sum(gamma[:, 0] * O1[m])
         den_af = np.sum(gamma[:, 0] * L1[m])
         
-        # 3. Lambda Intro (lmbd[2])
-        num_i = np.sum(gamma[:, 1] * O2[m])
-        den_i = np.sum(gamma[:, 1] * L2[m])
+        # 3. Lambda Old (lmbd[2])
+        num_old = np.sum(gamma[:, 1] * O2[m])
+        den_old = np.sum(gamma[:, 1] * L2[m])
+
+        # 4. Lambda Young (lmbd[3])
+        num_young = np.sum(gamma[:, 2] * O2[m])
+        den_young = np.sum(gamma[:, 2] * L2[m])
         
         # --- ИСПРАВЛЕНИЕ ЗДЕСЬ ---
         # Numba не любит присваивание списков срезам (numerators[m,:] = list).
@@ -103,11 +107,13 @@ def e_step_normalized(emit, trans, start, O1, O2, L1, L2):
         
         numerators[m, 0] = num_n
         numerators[m, 1] = num_af
-        numerators[m, 2] = num_i
+        numerators[m, 2] = num_old
+        numerators[m, 3] = num_young
         
         denominators[m, 0] = den_n
         denominators[m, 1] = den_af
-        denominators[m, 2] = den_i
+        denominators[m, 2] = den_old
+        denominators[m, 3] = den_young
         
     return numerators, denominators, total_log_lik
 
@@ -115,9 +121,9 @@ def e_step_normalized(emit, trans, start, O1, O2, L1, L2):
 # 3. MAIN EM TRAINING LOOP
 # ==========================================
 
-def train_em_normalized(O1, O2, L1, L2, init_lmbd, rr, Ti, init_a, max_iter=20, tol=1e-4):
+def train_em_normalized(O1, O2, L1, L2, init_rates, transition_params, rr, Ti, init_a, max_iter=20, tol=1e-4):
     M, N = O1.shape
-    curr_lmbd = np.array(init_lmbd, dtype=float)
+    curr_lmbd = np.array(init_rates, dtype=float)
     prev_log_lik = -np.inf
     
     print(f"Starting EM... Max Iter: {max_iter}")
@@ -125,7 +131,7 @@ def train_em_normalized(O1, O2, L1, L2, init_lmbd, rr, Ti, init_a, max_iter=20, 
     for it in range(max_iter):
         # Use helper functions from hmm.py
         log_emissions = hmm.compute_emissions_custom(O1, O2, L1, L2, curr_lmbd)
-        log_A = hmm.get_log_A(1000, rr, Ti, init_a)
+        log_A = hmm.get_log_A3(1000, rr, transition_params)
         log_start = np.log([1.0 - init_a, init_a])
         
         emit_linear = np.exp(log_emissions)
@@ -158,7 +164,7 @@ def train_em_normalized(O1, O2, L1, L2, init_lmbd, rr, Ti, init_a, max_iter=20, 
 # 4. PIPELINE WRAPPER
 # ==========================================
 
-def run_daiseg_em(json_file):
+# def run_daiseg_em(json_file):
     """
     Loads data using hmm.py utils, runs EM training, then runs Viterbi.
     """
@@ -244,7 +250,6 @@ def run_batch_em_pipeline(json_files_list, output_combined_file=None, max_iter=1
     # --- PHASE 1: LOAD EVERYTHING ---
     
     init_params = None
-    rr_val = 0
     
     for j_file in json_files_list:
         with open(j_file, 'r') as f:
@@ -254,13 +259,10 @@ def run_batch_em_pipeline(json_files_list, output_combined_file=None, max_iter=1
             prms = data["parameters_initial"]
             gen_time, mu, rr, l = prms['generation_time'], prms['mutation'], prms['rr'], prms['window_length']
             d = mu * l / gen_time
-            init_params = [d*prms['t_archaic_c'], d*prms['t_split_c'], d*prms['t_introgression_c'], d*prms['t_introgression'], prms['admixture_proportion']]
-            rr_val = rr
+            lambda_0 = [d * prms['t_archaic_c'], d * prms['t_split_c'], d * prms['t_introgression_old_c'], d * prms['t_introgression_young_c']]
+            transition_params = [prms['t_introgression_old'] / gen_time, prms['t_introgression_young'] / gen_time, prms['admixture_proportion_old'], prms['admixture_proportion_young']]
 
         obs_seq, _ = hmm.create_observations(data["prefix"]+'/'+data["data"], data["prefix"]+'/'+data["window_callability"]["Thousand_genomes"])
-        
-
-        
         
         cal_1kG = np.loadtxt(data['prefix'] + '/' + data["window_callability"]["Thousand_genomes"], usecols=-1)
         cal_nd_1kG = np.loadtxt(data['prefix'] + '/' + data["window_callability"]["Nd_1k_genomes"], usecols=-1)
@@ -282,23 +284,21 @@ def run_batch_em_pipeline(json_files_list, output_combined_file=None, max_iter=1
 
     # --- PHASE 2: GLOBAL TRAINING ---
     
-    curr_lmbd = np.array(init_params[:3], dtype=float)
-    Ti = init_params[3]
-    a_param = init_params[4]
+    curr_lmbd = np.array(lambda_0, dtype=float)
     
     prev_log_lik = -np.inf
     
     for it in range(max_iter):
-        total_nums = np.zeros(3)
-        total_dens = np.zeros(3)
+        total_nums = np.zeros(4)
+        total_dens = np.zeros(4)
         iter_log_lik = 0.0
         
-        log_A = hmm.get_log_A(1000, rr_val, Ti, a_param)
-        log_start = np.log([1.0 - a_param, a_param])
-        
+        log_A = hmm.get_log_A3(1000, rr, transition_params)
+        log_start = np.log(np.array([1 - transition_params[2] - transition_params[3], transition_params[2], transition_params[3]]) + 1e-300)        
         trans_linear = np.exp(log_A)
         start_linear = np.exp(log_start)
         
+        # цикл по всем хромосомам
         for item in batch_data:
             O1, O2, L1, L2 = item["em"]
             
@@ -314,7 +314,11 @@ def run_batch_em_pipeline(json_files_list, output_combined_file=None, max_iter=1
         new_lmbd = total_nums / (total_dens + 1e-10)
         
         diff = iter_log_lik - prev_log_lik
-        print(f"Iter {it+1}: LL={iter_log_lik:.2f} | Rates: N={new_lmbd[0]:.5f}, AF={new_lmbd[1]:.5f}, I={new_lmbd[2]:.5f}")
+        print(
+            f"Iter {it+1}: LL={iter_log_lik:.2f} | "
+            f"Rates: N={new_lmbd[0]:.5f}, AF={new_lmbd[1]:.5f}, "
+            f"OLD={new_lmbd[2]:.5f}, YOUNG={new_lmbd[3]:.5f}"
+        )
         
         if abs(diff) < tol and it > 0:
             print("Converged.")
@@ -323,8 +327,8 @@ def run_batch_em_pipeline(json_files_list, output_combined_file=None, max_iter=1
         prev_log_lik = iter_log_lik
         curr_lmbd = new_lmbd
 
-    final_params = np.concatenate([curr_lmbd, [Ti, a_param]])
-    print(f"Final Global Parameters: {final_params}")
+    print(f"Final Global Rates (lambdas): {curr_lmbd}")
+    print(f"Transition params: {transition_params}")
     
     # --- PHASE 3: INFERENCE & SAVING ---
     
@@ -337,7 +341,7 @@ def run_batch_em_pipeline(json_files_list, output_combined_file=None, max_iter=1
         cal_1kG, cal_nd_1kG, names = item["viterbi"]
         jsn_data = item["json"]
         
-        result = hmm.run_hmm(O1, O2, cal_1kG, cal_nd_1kG, lmbd=final_params, rr=rr_val)
+        result = hmm.run_hmm(O1, O2, cal_1kG, cal_nd_1kG, curr_lmbd, transition_params, rr=rr)
         
         dictionary = {k: v for k, v in zip(names, result)}
         out_dict = {}
@@ -348,28 +352,28 @@ def run_batch_em_pipeline(json_files_list, output_combined_file=None, max_iter=1
         
         output_tsv = f"{jsn_data['prefix']}/{jsn_data['output']}.em.tsv"
         
+        rows = []
         with open(output_tsv, "w", encoding="utf-8") as f:
-            f.write("Sample\tCHROM\tStart\tEnd\tLength\n")
+            f.write("Sample\tCHROM\tStart\tEnd\tLength\tState\n")
             for sample_name, tracks in out_dict_new.items():
-                archaic_intervals = tracks.get('Archaic', [])
-                for start, end in archaic_intervals:
-                    f.write(f"{sample_name}\t{jsn_data['CHROM']}\t{start}\t{end}\t{end - start + 1}\n")
-                    
-                    if output_combined_file:
-                        all_results.append({
-                            "CHR": jsn_data["CHROM"],
+                for state_name, intervals in tracks.items():
+                    for start, end in intervals:
+                        f.write(f"{sample_name}\t{jsn_data['CHROM']}\t{start}\t{end}\t{end-start+1}\t{state_name}\n")
+                        rows.append({
                             "Sample": sample_name,
+                            "CHR": jsn_data['CHROM'],
                             "Start": start,
                             "End": end,
-                            "Length": end - start + 1
+                            "Length": end-start+1,
+                            "State": state_name
                         })
-                    
+        all_results.append(pd.DataFrame(rows))          
     print(f"Done! Processed {len(batch_data)} files.")
     
     # --- SAVING MERGED FILE ---
     if output_combined_file:
         print(f"Saving merged results to {output_combined_file}...")
-        df = pd.DataFrame(all_results, columns=[ "Sample", "CHR",  "Start", "End", "Length"])
+        df = pd.concat(all_results, ignore_index=True)
         
         if not df.empty:
             try:

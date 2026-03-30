@@ -118,7 +118,8 @@ def initA3(L, rr, t_old, t_young, a_old, a_young):
     A = A / A.sum(axis=1, keepdims=True) # нормировка строк: делим каждую строку на её сумму, чтобы в каждой строке сумма стала 1
     return A
 
-def get_log_A3(L, rr, t_old, t_young, a_old, a_young):
+def get_log_A3(L, rr, transition_params):
+    t_old, t_young, a_old, a_young = transition_params[0], transition_params[1], transition_params[2], transition_params[3]
     A = initA3(L, rr, t_old, t_young, a_old, a_young)
     return np.log(A + 1e-300)
 
@@ -254,7 +255,7 @@ def run_hmm(O1, O2, L1, L2, rates, transition_params, rr):
     log_emissions = compute_emissions_custom(O1, O2, L1, L2, rates) # считаем эмиссии (по кол-ву мутаций до O_max, не по всем окнам)
     
     # Transitions
-    log_A = get_log_A3(1000, rr, transition_params[0], transition_params[1], transition_params[2], transition_params[3]) # считаем переходы
+    log_A = get_log_A3(1000, rr, transition_params) # считаем переходы
     
     # Initial probabilities
     # log_start = np.log(np.array([1 - a_old - a_young, a_old, a_young]) + 1e-300)
