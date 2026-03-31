@@ -52,6 +52,7 @@ def forward_backward_normalized(emit, trans, start):
 
     log_lik = -np.sum(np.log(scales + 1e-300))
         
+
     # --- BACKWARD PASS ---
     beta = np.zeros((N, n_states))
     beta[N-1, :] = scales[N-1]
@@ -63,12 +64,28 @@ def forward_backward_normalized(emit, trans, start):
                 acc += trans[s, next_s] * emit[t+1, next_s] * beta[t+1, next_s]
             beta[t, s] = acc * scales[t] 
 
+
     # --- GAMMA ---
     gamma = alpha * beta
     for t in range(N):
         gamma[t] /= (np.sum(gamma[t]) + 1e-300)
-            
-    return gamma, log_lik
+
+
+    # --- XI SUM --- 
+    xi_sum = np.zeros((n_states, n_states))
+
+    for t in range(N - 1):
+        denom = 0.0
+        for i in range(n_states):
+            for j in range(n_states):
+                denom += alpha[t, i] * trans[i, j] * emit[t + 1, j] * beta[t + 1, j]
+
+        for i in range(n_states):
+            for j in range(n_states):
+                val = alpha[t, i] * trans[i, j] * emit[t + 1, j] * beta[t + 1, j]
+                xi_sum[i, j] += val / (denom + 1e-300)
+
+    return gamma, xi_sum, log_lik
 
 # ==========================================
 # 2. E-STEP (Parallel Statistics Collection)
@@ -80,11 +97,19 @@ def e_step_normalized(emit, trans, start, O1, O2, L1, L2):
     numerators = np.zeros((M, 4)) 
     denominators = np.zeros((M, 4))
     total_log_lik = 0.0
+
+    xi_sums = np.zeros((M, n_states, n_states))
+    gamma_excl_last_sums = np.zeros((M, n_states))
+    start_sums = np.zeros((M, n_states))
     
     for m in prange(M):
-        gamma, log_lik = forward_backward_normalized(emit[m], trans, start)
+        gamma, xi_sum, log_lik = forward_backward_normalized(emit[m], trans, start)
         total_log_lik += log_lik
         
+        start_sums[m, :] = gamma[0, :]
+        gamma_excl_last_sums[m, :] = np.sum(gamma[:-1], axis=0)
+        xi_sums[m, :, :] = xi_sum
+
         # 1. Lambda Neutral (lmbd[0])
         num_n = np.sum(gamma[:, 0] * O2[m]) + np.sum(gamma[:, 1] * O1[m]) + np.sum(gamma[:, 2] * O1[m])
         den_n = np.sum(gamma[:, 0] * L2[m]) + np.sum(gamma[:, 1] * L1[m]) + np.sum(gamma[:, 2] * L1[m])
@@ -115,122 +140,122 @@ def e_step_normalized(emit, trans, start, O1, O2, L1, L2):
         denominators[m, 2] = den_old
         denominators[m, 3] = den_young
         
-    return numerators, denominators, total_log_lik
+    return numerators, denominators, xi_sums, gamma_excl_last_sums, start_sums, total_log_lik
 
 # ==========================================
 # 3. MAIN EM TRAINING LOOP
 # ==========================================
 
-def train_em_normalized(O1, O2, L1, L2, init_rates, transition_params, rr, Ti, init_a, max_iter=20, tol=1e-4):
-    M, N = O1.shape
-    curr_lmbd = np.array(init_rates, dtype=float)
-    prev_log_lik = -np.inf
+# def train_em_normalized(O1, O2, L1, L2, init_rates, transition_params, rr, Ti, init_a, max_iter=20, tol=1e-4):
+#     M, N = O1.shape
+#     curr_lmbd = np.array(init_rates, dtype=float)
+#     prev_log_lik = -np.inf
     
-    print(f"Starting EM... Max Iter: {max_iter}")
+#     print(f"Starting EM... Max Iter: {max_iter}")
     
-    for it in range(max_iter):
-        # Use helper functions from hmm.py
-        log_emissions = hmm.compute_emissions_custom(O1, O2, L1, L2, curr_lmbd)
-        log_A = hmm.get_log_A3(1000, rr, transition_params)
-        log_start = np.log([1.0 - init_a, init_a])
+#     for it in range(max_iter):
+#         # Use helper functions from hmm.py
+#         log_emissions = hmm.compute_emissions_custom(O1, O2, L1, L2, curr_lmbd)
+#         log_A = hmm.get_log_A3(1000, rr, transition_params)
+#         log_start = np.log([1.0 - init_a, init_a])
         
-        emit_linear = np.exp(log_emissions)
-        trans_linear = np.exp(log_A)
-        start_linear = np.exp(log_start)
+#         emit_linear = np.exp(log_emissions)
+#         trans_linear = np.exp(log_A)
+#         start_linear = np.exp(log_start)
         
-        nums, dens, log_lik = e_step_normalized(
-            emit_linear, trans_linear, start_linear, O1, O2, L1, L2
-        )
+#         nums, dens, log_lik = e_step_normalized(
+#             emit_linear, trans_linear, start_linear, O1, O2, L1, L2
+#         )
         
-        total_nums = np.sum(nums, axis=0)
-        total_dens = np.sum(dens, axis=0)
+#         total_nums = np.sum(nums, axis=0)
+#         total_dens = np.sum(dens, axis=0)
         
-        # Update Rates
-        new_lmbd = total_nums / (total_dens + 1e-10)
+#         # Update Rates
+#         new_lmbd = total_nums / (total_dens + 1e-10)
         
-        diff = log_lik - prev_log_lik
-        print(f"  Iter {it+1}: LL={log_lik:.2f}, Delta={diff:.4f} | Rates: N={new_lmbd[0]:.5f}, AF={new_lmbd[1]:.5f}, I={new_lmbd[2]:.5f}")
+#         diff = log_lik - prev_log_lik
+#         print(f"  Iter {it+1}: LL={log_lik:.2f}, Delta={diff:.4f} | Rates: N={new_lmbd[0]:.5f}, AF={new_lmbd[1]:.5f}, I={new_lmbd[2]:.5f}")
         
-        if abs(diff) < tol and it > 0:
-            print("  Converged.")
-            break
+#         if abs(diff) < tol and it > 0:
+#             print("  Converged.")
+#             break
             
-        prev_log_lik = log_lik
-        curr_lmbd = new_lmbd
+#         prev_log_lik = log_lik
+#         curr_lmbd = new_lmbd
         
-    return curr_lmbd
+#     return curr_lmbd
 
-# ==========================================
+#==========================================
 # 4. PIPELINE WRAPPER
-# ==========================================
+#==========================================
 
-# def run_daiseg_em(json_file):
-    """
-    Loads data using hmm.py utils, runs EM training, then runs Viterbi.
-    """
-    with open(json_file, 'r') as f:
-        data = json.load(f)
+# # def run_daiseg_em(json_file):
+#     """
+#     Loads data using hmm.py utils, runs EM training, then runs Viterbi.
+#     """
+#     with open(json_file, 'r') as f:
+#         data = json.load(f)
         
-    print(f"Loading data from {json_file}...")
+#     print(f"Loading data from {json_file}...")
     
-    # 1. Prepare Data using hmm.py
-    obs_seq, nst = hmm.create_observations(data["data"], data["window_callability"]["Thousand_genomes"])
-    prms = data["parameters_initial"]
-    gen_time, mu, rr, l = prms['generation_time'], prms['mutation'], prms['rr'], prms['window_length']
+#     # 1. Prepare Data using hmm.py
+#     obs_seq, nst = hmm.create_observations(data["data"], data["window_callability"]["Thousand_genomes"])
+#     prms = data["parameters_initial"]
+#     gen_time, mu, rr, l = prms['generation_time'], prms['mutation'], prms['rr'], prms['window_length']
     
-    # Initial Params
-    d = mu * l / gen_time
-    lambda_0 = [d*prms['t_archaic_c'],  d*prms['t_split_c'], d*prms['t_introgression_c'], d*prms['t_introgression'], prms['admixture_proportion']]
+#     # Initial Params
+#     d = mu * l / gen_time
+#     lambda_0 = [d*prms['t_archaic_c'],  d*prms['t_split_c'], d*prms['t_introgression_c'], d*prms['t_introgression'], prms['admixture_proportion']]
     
-    cal_1kG = np.loadtxt(data["window_callability"]["Thousand_genomes"], usecols=-1)
-    cal_nd_1kG = np.loadtxt(data["window_callability"]["Nd_1k_genomes"], usecols=-1)  
+#     cal_1kG = np.loadtxt(data["window_callability"]["Thousand_genomes"], usecols=-1)
+#     cal_nd_1kG = np.loadtxt(data["window_callability"]["Nd_1k_genomes"], usecols=-1)  
     
-    O1, O2, names = hmm.prepare_matrices_from_dict(obs_seq)   
-    M, N = O1.shape
+#     O1, O2, names = hmm.prepare_matrices_from_dict(obs_seq)   
+#     M, N = O1.shape
     
-    # 2. Expand Masks for EM (needs MxN matrices)
-    L1_mat = np.tile(cal_1kG, (M, 1))
-    L2_mat = np.tile(cal_nd_1kG, (M, 1))
+#     # 2. Expand Masks for EM (needs MxN matrices)
+#     L1_mat = np.tile(cal_1kG, (M, 1))
+#     L2_mat = np.tile(cal_nd_1kG, (M, 1))
     
-    # 3. Run EM Optimization
-    init_rates = lambda_0[:3] # [N, AF, I]
-    Ti_param = lambda_0[3]
-    a_param = lambda_0[4]
+#     # 3. Run EM Optimization
+#     init_rates = lambda_0[:3] # [N, AF, I]
+#     Ti_param = lambda_0[3]
+#     a_param = lambda_0[4]
     
-    optimized_rates = train_em_normalized(
-        O1, O2, L1_mat, L2_mat, 
-        init_lmbd=init_rates, 
-        rr=rr, 
-        Ti=Ti_param, 
-        init_a=a_param, 
-        max_iter=20
-    )
+#     optimized_rates = train_em_normalized(
+#         O1, O2, L1_mat, L2_mat, 
+#         init_lmbd=init_rates, 
+#         rr=rr, 
+#         Ti=Ti_param, 
+#         init_a=a_param, 
+#         max_iter=20
+#     )
     
-    final_lambda = np.concatenate([optimized_rates, [Ti_param, a_param]])
+#     final_lambda = np.concatenate([optimized_rates, [Ti_param, a_param]])
     
-    # 4. Run Standard Inference (Viterbi) with NEW parameters via hmm.py
-    print("Running Viterbi with optimized parameters...")
-    result = hmm.run_hmm(O1, O2, cal_1kG, cal_nd_1kG, lmbd=final_lambda, rr=rr)
+#     # 4. Run Standard Inference (Viterbi) with NEW parameters via hmm.py
+#     print("Running Viterbi with optimized parameters...")
+#     result = hmm.run_hmm(O1, O2, cal_1kG, cal_nd_1kG, lmbd=final_lambda, rr=rr)
     
-    # 5. Save results
-    dictionary = {k: v for k, v in zip(names, result)}
-    out_dict = {}
-    for name in names:
-        out_dict[name] = hmm.get_tracts(dictionary[name])
+#     # 5. Save results
+#     dictionary = {k: v for k, v in zip(names, result)}
+#     out_dict = {}
+#     for name in names:
+#         out_dict[name] = hmm.get_tracts(dictionary[name])
         
-    out_dict_new = hmm.clean_gaps(out_dict, data["gaps"], data["CHROM"])
+#     out_dict_new = hmm.clean_gaps(out_dict, data["gaps"], data["CHROM"])
 
-    output_tsv = f"{data['prefix']}.em.tsv"
-    print(f"Saving EM-optimized TSV results to: {output_tsv}")
+#     output_tsv = f"{data['prefix']}.em.tsv"
+#     print(f"Saving EM-optimized TSV results to: {output_tsv}")
     
-    with open(output_tsv, "w", encoding="utf-8") as f:
-        f.write("Sample\tStart\tEnd\n")
-        for sample_name, tracks in out_dict_new.items():
-            archaic_intervals = tracks.get('Archaic', [])
-            for start, end in archaic_intervals:
-                f.write(f"{sample_name}\t{start}\t{end}\n")
+#     with open(output_tsv, "w", encoding="utf-8") as f:
+#         f.write("Sample\tStart\tEnd\n")
+#         for sample_name, tracks in out_dict_new.items():
+#             archaic_intervals = tracks.get('Archaic', [])
+#             for start, end in archaic_intervals:
+#                 f.write(f"{sample_name}\t{start}\t{end}\n")
               
-    return result
+#     return result
 
 def run_batch_em_pipeline(json_files_list, output_combined_file=None, max_iter=15, tol=1e-6):
     """
@@ -285,18 +310,22 @@ def run_batch_em_pipeline(json_files_list, output_combined_file=None, max_iter=1
     # --- PHASE 2: GLOBAL TRAINING ---
     
     curr_lmbd = np.array(lambda_0, dtype=float)
+    curr_A = np.exp(hmm.get_log_A3(1000, rr, transition_params))
+    curr_pi = np.array([1 - transition_params[2] - transition_params[3], transition_params[2], transition_params[3]], dtype=float)
+    curr_pi /= np.sum(curr_pi)
     
     prev_log_lik = -np.inf
     
     for it in range(max_iter):
         total_nums = np.zeros(4)
         total_dens = np.zeros(4)
+        total_xi = np.zeros((3, 3))
+        total_gamma_excl_last = np.zeros(3)
+        total_start = np.zeros(3)
         iter_log_lik = 0.0
         
-        log_A = hmm.get_log_A3(1000, rr, transition_params)
-        log_start = np.log(np.array([1 - transition_params[2] - transition_params[3], transition_params[2], transition_params[3]]) + 1e-300)        
-        trans_linear = np.exp(log_A)
-        start_linear = np.exp(log_start)
+        trans_linear = curr_A
+        start_linear = curr_pi
         
         # цикл по всем хромосомам
         for item in batch_data:
@@ -305,13 +334,18 @@ def run_batch_em_pipeline(json_files_list, output_combined_file=None, max_iter=1
             log_emissions = hmm.compute_emissions_custom(O1, O2, L1, L2, curr_lmbd)
             emit_linear = np.exp(log_emissions)
             
-            nums, dens, ll = e_step_normalized(emit_linear, trans_linear, start_linear, O1, O2, L1, L2)
+            nums, dens, xi_sums, gamma_excl_last_sums, start_sums, ll = e_step_normalized(emit_linear, trans_linear, start_linear, O1, O2, L1, L2)
             
+            total_xi += np.sum(xi_sums, axis=0)
+            total_gamma_excl_last += np.sum(gamma_excl_last_sums, axis=0)
+            total_start += np.sum(start_sums, axis=0)
             total_nums += np.sum(nums, axis=0)
             total_dens += np.sum(dens, axis=0)
             iter_log_lik += ll
             
         new_lmbd = total_nums / (total_dens + 1e-10)
+        new_A = total_xi / (total_gamma_excl_last[:, None] + 1e-10)
+        new_pi = total_start / (np.sum(total_start) + 1e-300)
         
         diff = iter_log_lik - prev_log_lik
         print(
@@ -319,16 +353,27 @@ def run_batch_em_pipeline(json_files_list, output_combined_file=None, max_iter=1
             f"Rates: N={new_lmbd[0]:.5f}, AF={new_lmbd[1]:.5f}, "
             f"OLD={new_lmbd[2]:.5f}, YOUNG={new_lmbd[3]:.5f}"
         )
+        print("A =")
+        print(new_A)
+        print("pi =", new_pi)
         
         if abs(diff) < tol and it > 0:
             print("Converged.")
+            curr_lmbd = new_lmbd
+            curr_A = new_A
+            curr_pi = new_pi
             break
             
         prev_log_lik = iter_log_lik
         curr_lmbd = new_lmbd
+        curr_A = new_A
+        curr_pi = new_pi
 
     print(f"Final Global Rates (lambdas): {curr_lmbd}")
-    print(f"Transition params: {transition_params}")
+    print("Final transition matrix A:")
+    print(curr_A)
+    print("Final initial distribution pi:")
+    print(curr_pi)
     
     # --- PHASE 3: INFERENCE & SAVING ---
     
@@ -341,7 +386,7 @@ def run_batch_em_pipeline(json_files_list, output_combined_file=None, max_iter=1
         cal_1kG, cal_nd_1kG, names = item["viterbi"]
         jsn_data = item["json"]
         
-        result = hmm.run_hmm(O1, O2, cal_1kG, cal_nd_1kG, curr_lmbd, transition_params, rr=rr)
+        result = hmm.run_hmm(O1, O2, cal_1kG, cal_nd_1kG, curr_lmbd, rr, rr, A=curr_A, pi=curr_pi)
         
         dictionary = {k: v for k, v in zip(names, result)}
         out_dict = {}

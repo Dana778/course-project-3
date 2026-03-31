@@ -248,18 +248,20 @@ def viterbi_fast(log_emit, log_trans, log_start):
 
 # rates = [lambda_n, lambda_af, lambda_old, lambda_young]
 # transition_params = [t_old, t_young, a_old, a_young]
-def run_hmm(O1, O2, L1, L2, rates, transition_params, rr):
+def run_hmm(O1, O2, L1, L2, rates, rr, transition_params=[], A=None, pi=None):
     """Orchestrates HMM pipeline: emissions, transitions, and Viterbi."""
     
     print("Calculating emission scores...")
     log_emissions = compute_emissions_custom(O1, O2, L1, L2, rates) # считаем эмиссии (по кол-ву мутаций до O_max, не по всем окнам)
     
     # Transitions
-    log_A = get_log_A3(1000, rr, transition_params) # считаем переходы
-    
-    # Initial probabilities
-    # log_start = np.log(np.array([1 - a_old - a_young, a_old, a_young]) + 1e-300)
-    log_start = np.log(np.array([1 - transition_params[2] - transition_params[3], transition_params[2], transition_params[3]]) + 1e-300)
+    # Initial probabilities: log_start = np.log(np.array([1 - a_old - a_young, a_old, a_young]) + 1e-300)
+    if A is None or pi is None:
+        log_A = get_log_A3(1000, rr, transition_params) # считаем переходы
+        log_start = np.log(np.array([1 - transition_params[2] - transition_params[3], transition_params[2], transition_params[3]]) + 1e-300)
+    else: 
+        log_A = np.log(A + 1e-300)
+        log_start = np.log(pi + 1e-300)
     
     print("Running Viterbi...")
     paths = viterbi_fast(log_emissions, log_A, log_start)
@@ -402,7 +404,7 @@ def run_daiseg(json_file): # type: ignore
     O1, O2, names = prepare_matrices_from_dict(obs_seq)
     
     # Run HMM
-    result = run_hmm(O1, O2, cal_1kG, cal_nd_1kG, lambda_0, transition_params, rr=rr)
+    result = run_hmm(O1, O2, cal_1kG, cal_nd_1kG, lambda_0, rr, transition_params=transition_params)
     dictionary = {k: v for k, v in zip(names, result)}
     
     # Extract tracts
