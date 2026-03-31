@@ -344,8 +344,14 @@ def run_batch_em_pipeline(json_files_list, output_combined_file=None, max_iter=1
             iter_log_lik += ll
             
         new_lmbd = total_nums / (total_dens + 1e-10)
+
         new_A = total_xi / (total_gamma_excl_last[:, None] + 1e-10)
+        new_A = np.clip(new_A, 1e-300, 1.0)
+        new_A = new_A / new_A.sum(axis=1, keepdims=True)
+
         new_pi = total_start / (np.sum(total_start) + 1e-300)
+        new_pi = np.clip(new_pi, 1e-300, 1.0)
+        new_pi = new_pi / np.sum(new_pi)
         
         diff = iter_log_lik - prev_log_lik
         print(
@@ -386,7 +392,7 @@ def run_batch_em_pipeline(json_files_list, output_combined_file=None, max_iter=1
         cal_1kG, cal_nd_1kG, names = item["viterbi"]
         jsn_data = item["json"]
         
-        result = hmm.run_hmm(O1, O2, cal_1kG, cal_nd_1kG, curr_lmbd, rr, rr, A=curr_A, pi=curr_pi)
+        result = hmm.run_hmm(O1, O2, cal_1kG, cal_nd_1kG, curr_lmbd, rr, A=curr_A, pi=curr_pi)
         
         dictionary = {k: v for k, v in zip(names, result)}
         out_dict = {}

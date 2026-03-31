@@ -284,7 +284,7 @@ def get_tracts(vector, step=1000):
             current_state = state
             start_index = i
     
-    result[current_state].append((start_index * step, len(vector) * step))
+    result[current_state].append((start_index * step, len(vector) * step - 1))
     
     return {
         "Modern": result[0],
