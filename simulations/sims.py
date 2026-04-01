@@ -461,10 +461,7 @@ def calculate_class_metrics(true_pth, inf_pth, L):
         results[cls] = {
             "Precision": p,
             "Recall": r,
-            "F1": f,
-            "TP": int(tp),
-            "FP": int(fp),
-            "FN": int(fn)
+            "F1": f
         }
 
     return {

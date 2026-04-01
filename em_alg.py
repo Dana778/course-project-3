@@ -434,3 +434,22 @@ def run_batch_em_pipeline(json_files_list, output_combined_file=None, max_iter=1
                 pass
             
         df.to_csv(output_combined_file, sep='\t', index=False)
+
+    # --- SAVING LEARNED PARAMETERS ---
+    learned_params = {
+        "lambdas": curr_lmbd.tolist(),
+        "A": curr_A.tolist(),
+        "pi": curr_pi.tolist(),
+        "initial_transition_params": transition_params,
+        "max_iter": max_iter,
+        "tol": tol,
+        "final_log_likelihood": float(prev_log_lik)
+    }
+
+    if output_combined_file:
+        params_out = output_combined_file.replace(".tsv", ".learned_params.json")
+    else:
+        params_out = "learned_params.json"
+
+    with open(params_out, "w", encoding="utf-8") as f:
+        json.dump(learned_params, f, indent=2)
